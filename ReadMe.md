@@ -25,3 +25,65 @@ g++ 15.2.0 defaults to C++17 (-std=gnu++17), ensuring full backward compatibilit
 
 ## Testing
 I coded many use of RingBuffer push and pop and also made cases for FAIL and PASS for the unit testing of CTEST covering the push pop order the empty pop behavior the overwrite correctness and move vs copy overload 
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Block 2: Mutex vs Lock-Free SPSC Queue
+
+### Design
+- Mutex version: single std::mutex guards the entire push()/pop() body.
+- Lock-free version: head_/tail_ as std::atomic<size_t>, no shared count_ —
+  fullness/emptiness derived purely from comparing head_ and tail_.
+  One slot deliberately sacrificed (capacity N holds N-1 real items) to keep
+  the empty/full states distinguishable, since head_==tail_ is ambiguous
+  between them otherwise.
+
+### Why lock-free rejects instead of overwriting on full
+Overwrite-on-full would require the producer to also advance head_ — but
+head_ is owned exclusively by the consumer thread in this design. Single-writer
+ownership per atomic variable is what makes the lock-free version correct
+without a mutex; breaking it reintroduces the exact data race atomics were
+meant to eliminate. So push() returns false instead.
+
+### Memory ordering
+- Own thread's atomic (e.g. consumer reading head_): relaxed — no other
+  thread ever writes it, so there's nothing to synchronize.
+- Other thread's atomic (e.g. consumer reading tail_): acquire, paired with
+  the producer's release store. This guarantees that if the acquire-load
+  observes the release-store's value, everything the producer did BEFORE
+  that release (writing buffer_[tail_]) is also visible — not just the
+  atomic variable itself.
+
+### A real debugging story: the WSL2 yield() anomaly
+Initial benchmark (capacity=1024, 100k items) appeared to hang. Added progress
+instrumentation to both threads — this ruled out deadlock/livelock immediately,
+since both counters were still climbing, just very slowly and non-linearly
+(10k items took disproportionately longer than 10x the time for 1k items).
+Root cause: with capacity far smaller than item count, the producer hits
+"full" constantly and calls std::this_thread::yield() an enormous number of
+times. Under WSL2's virtualized scheduler, yield()-triggered context switches
+are meaningfully more expensive than on bare-metal Linux, and that overhead
+compounds under heavy backpressure. Fixed by sizing capacity (131072) to
+avoid pathological retry rates — isolating the benchmark to measure raw
+per-operation cost rather than backpressure-retry overhead.
+
+### Results (100,000 items, 3 runs)
+| Queue      | ns/op (avg) | ops/sec      |
+|------------|-------------|--------------|
+| Mutex      | ~186 ns     | ~5.4M ops/s  |
+| Lock-free  | ~87 ns      | ~11.5M ops/s |
+
+Lock-free is ~2x faster. Mutex pays for kernel-level lock/unlock and
+potential thread context switches under contention; lock-free stays entirely
+in user space using hardware atomic instructions (CAS/load/store), with no
+syscall in the common (uncontended) path.

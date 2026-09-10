@@ -12,5 +12,11 @@ target_link_libraries(race_demo pthread)
 add_executable(spsc_concurrent_test tests/spsc_concurrent_test.cpp)
 target_link_libraries(spsc_concurrent_test pthread)
 
+add_executable(spsc_lockfree_test tests/spsc_lockfree_test.cpp)
+target_link_libraries(spsc_lockfree_test pthread)
+
+add_executable(benchmark tests/benchmark.cpp)
+target_link_libraries(benchmark pthread)
+
 enable_testing()
 add_test(NAME ring_buffer_tests COMMAND ring_buffer_test)
