@@ -21,5 +21,11 @@ target_link_libraries(benchmark pthread)
 add_executable(benchmark_pad tests/false_sharing_benchmark.cpp)
 target_link_libraries(benchmark_pad pthread)
 
+add_executable(reciever src/udp_reciever.cpp)
+target_link_libraries(reciever pthread)
+
+add_executable(producer src/udp_sender.cpp)
+target_link_libraries(producer pthread)
+
 enable_testing()
 add_test(NAME ring_buffer_tests COMMAND ring_buffer_test)

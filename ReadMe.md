@@ -87,3 +87,47 @@ Lock-free is ~2x faster. Mutex pays for kernel-level lock/unlock and
 potential thread context switches under contention; lock-free stays entirely
 in user space using hardware atomic instructions (CAS/load/store), with no
 syscall in the common (uncontended) path.
+
+
+
+## Block 3: False Sharing — Detection and Fix
+
+### The setup
+head_ and tail_ (both std::atomic<size_t>, 8 bytes each) were declared
+adjacent in memory in the lock-free queue. A CPU cache line is 64 bytes,
+so both variables likely shared one cache line despite being written by
+different threads (producer writes tail_, consumer writes head_) with
+no actual data dependency between them.
+
+### Why this matters
+The cache moves data in fixed 64-byte aligned chunks, not per-variable.
+When one core writes to its variable, the entire cache line — including
+the other thread's unrelated variable — gets invalidated on the other
+core, forcing an unnecessary re-fetch. This is pure overhead from
+physical memory layout, not from any real synchronization requirement.
+
+### Tooling note: perf unavailable under WSL2
+perf installed correctly (v7.0.14) but hardware performance counters
+(cycles, cache-misses, etc.) are not exposed to the WSL2 guest kernel —
+Hyper-V doesn't pass through the CPU's Performance Monitoring Unit by
+default. Confirmed via `perf stat -e cycles,...` failing with "No
+supported events found" even under sudo. Fell back to software-based
+wall-clock throughput comparison (same method as the Block 2 mutex vs
+lock-free benchmark) to demonstrate the effect instead.
+
+### Fix
+alignas(64) applied to both head_ and tail_, forcing each onto its own
+cache line:
+    alignas(64) std::atomic<std::size_t> head_{0};
+    alignas(64) std::atomic<std::size_t> tail_{0};
+
+### Results (1,000,000 items, capacity sized to avoid backpressure, 3 runs)
+| Version   | ns/op (range) |
+|-----------|---------------|
+| Unpadded  | 94.5 - 99.5   |
+| Padded    | 73.6 - 80.2   |
+
+Padded version is ~18-22% faster. Verified the gap wasn't backpressure-driven
+by re-running with capacity sized well above item count so push() never
+fails/retries — the gap held steady, confirming false sharing (not yield()
+overhead) as the cause.
